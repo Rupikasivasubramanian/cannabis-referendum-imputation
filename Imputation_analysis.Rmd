@@ -1,0 +1,191 @@
+---
+title: "lab5_imputation"
+author: "Rupikasiva"
+date: "2025-08-11"
+output: pdf_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+#loading the necessary libraries
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(mice)
+```
+
+
+Reading the csv file and creating the table for missing Values
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+referendum_raw <- read_csv("referendum_survey_lab_version.csv", show_col_types = FALSE)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+#counting missing values and converting it to a table
+missing_values_table <- referendum_raw |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(cols=everything(), names_to = "Variable", values_to = "Count_Missing_value")
+
+#Formatting the table 
+kable(missing_values_table,
+      format = "latex",
+      escape = TRUE,
+      caption = "Count of Missing Values per Variable",
+      col.names = c("Variable", "Count of Missing Values"),
+      align = c("c", "c")
+) |>
+  kableExtra::kable_styling(bootstrap_options = c("bordered", "hovered"),
+                            full_width = FALSE,
+                            position = "center",
+                            latex_options = c("HOLD_position")
+  )
+```
+
+
+Plotting the age across different gender (here we are filtering out the NA values)
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+referendum_plot <- referendum_raw |>
+  filter(!is.na(age), !is.na(gender))
+
+ggplot(referendum_plot, aes(x = age)) +
+  geom_histogram(binwidth = 5, fill = "red", color = "white") +
+  facet_wrap(~ gender, labeller = label_wrap_gen(width = 20)) +
+  labs(
+    title = "Age Distribution by Gender",
+    x = "Age",
+    y = "Respondent Count"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    strip.text = element_text(face = "bold")
+  )
+
+```
+
+This plot explains the distribution of respondents age across different gender groups. It excludes the missing values in age and gender but is included in other computations.
+
+
+Logistic regression on complete cases
+
+Calculating the proportion of people who votes "yes" which is 
+`r mean(referendum_raw$referendum[complete.cases(referendum_raw)], na.rm = TRUE)` of the respondents
+
+```{r regression-complted-cases, echo=FALSE}
+
+#logistic regression
+ref_model <- glm(referendum ~ age + gender, data = referendum_raw, family = binomial)
+tidy(ref_model) |>
+  kable(caption = "Logistic Regression Results — Predicting 'Yes' Vote from Age and Gender",format = "latex",
+        escape = TRUE,
+        digits = 3,
+        align = "c",
+        col.names = c("Term","Estimate","Std_Error","Statistic","p value")
+  ) |>
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "bordered"),
+    full_width = FALSE,
+    position = "center",
+    latex_options = c("HOLD_position")
+  )
+
+```
+From Table2, the interpretation is that females have been used as the reference gender category. A negative coefficient indicates that an increase in age decreases the estimate, which means that people in higher age groups are less likely to vote "Yes". Similarly, the negative value for genderMale suggests that males are less likely to vote "Yes" (i.e., support legalisation of cannabis) compared to females.
+
+The p-value tells us whether the effect is statistically significant. If p < 0.05, it means the result is unlikely to have appeared by chance. Therefore, our interpretation — that younger people are more likely to vote "Yes" — is supported by the data.
+
+Regression on Imputed cases
+
+```{r regression-imputed-cases, echo=FALSE, message=FALSE, warning=FALSE}
+
+invisible({
+  capture.output({
+    referendum_imputed <- mice(referendum_raw, m = 5, method = 'pmm', printFlag = FALSE, quiet = TRUE)
+  }, type = c("output", "message"))
+})
+
+#calculating the proportion of voters who has given "yes"
+proportion_1 <- mean(mice::complete(referendum_imputed, 1)$referendum)
+
+#Run logistic regression on imputed data and pooling them
+with(referendum_imputed, glm(referendum ~ age + gender, family = binomial)) |>
+  pool() |>
+  tidy() |>
+  select(term, estimate, std.error, statistic, p.value) |>
+  kable(
+    format = "latex",
+    escape = TRUE,
+    caption = "Logistic Regression on Imputed Data — Predicting 'Yes' Vote",
+    digits = 3,
+    align = "c",
+    col.names = c("Term", "Estimate", "Std_Error", "Statistic", "p_value")
+  ) |>
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "bordered"),
+    full_width = FALSE,
+    position = "center",
+    latex_options = c("HOLD_position")
+  )
+
+```
+
+The proportion of respondents voting "Yes" after imputation was `r mean(complete(referendum_imputed, "long")$referendum)`
+
+Table 3 shows similar results as Table 2 which results us to make similar interpretation.
+
+Conclusion
+
+It is evident that 60% of the sample population supported legalisation of Cannabis. Also, age has a major effect on voting, and older people do not prefer to support the legalisation compared to younger people. Comparing males and females, males are less likely to support the legalisation. 
+
+Interpretation of Data Quality
+
+We can see that there was a specific group of people who did not disclose their voting preference and this specifically relates to age which might infer that the data is MAR - Missing at Random and Also, there is part of bias since our data is specific to a certain age group. Hence we have reduced the bias by using MICE -  Multiple Imputation with chained equations.
+
+Comparing results
+
+```{r results_comparison, echo=FALSE, message=FALSE, warning=FALSE}
+
+ref_model_tidy <- tidy(ref_model) |>
+  mutate(model = "Complete Cases")
+
+invisible({
+  capture.output({
+    referendum_imputed <- mice(referendum_raw, m = 5, method = 'pmm', printFlag = FALSE, quiet = TRUE)
+  }, type = c("output", "message"))
+})
+#calculating the proportion of voters who has given "yes"
+proportion2 <- mean(mice::complete(referendum_imputed, 1)$referendum)
+
+referendum_imputed <- with(referendum_imputed, glm(referendum ~ age + gender, family =
+                                                   binomial)
+                                )
+ref_imputed_tidy <- pool(referendum_imputed) |>
+  tidy() |>
+  mutate(model = "Imputed Data")
+
+combined_results <- bind_rows(ref_model_tidy, ref_imputed_tidy)
+
+combined_filtered <- combined_results %>%
+  filter(term %in% c("(Intercept)", "age", "genderMale", "genderGenderqueer, neither exclusively male nor female"))
+
+combined_filtered %>%
+  ggplot(aes(x = term, y = estimate, color = model)) +
+  geom_point(position = position_dodge(width = 0.3), size = 3) +
+  geom_errorbar(aes(ymin = estimate - std.error, ymax = estimate +  std.error),
+                position = position_dodge(width = 0.3),
+                width = 0.2) +
+  labs(title = "Coefficient Estimates with 95% Confidence Intervals",
+       subtitle = "Comparison between Complete Cases and Multiple Imputation",
+       x = "Variable",
+       y = "Coefficient Estimate",
+       color = "Analysis Method") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+The estimates of both methods are similar, which means imputed missing data did not change the conclusions.Age coefficient -0.029 and genderMale in negative shows that male are less likely to vote yes. But its better to capture the voting preference from all age groups to make more accurate policy decisions.
